@@ -26,7 +26,8 @@
 
 # Creates a deployment for the Triton Inference Server pods
 # Each pod contains a Triton container and an nfs mount as specified in
-# values.yaml for the model repository
+# values.yaml for the model repository (if the modelRepository.type is
+# set to nfs)
 
 apiVersion: apps/v1
 kind: Deployment
@@ -40,6 +41,10 @@ metadata:
     heritage: {{ .Release.Service }}
 spec:
   replicas: {{ .Values.autoscaling.minReplicas }}
+  {{- with .Values.deployment.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   selector:
     matchLabels:
       app: {{ template "triton-inference-server.name" . }}
@@ -49,32 +54,52 @@ spec:
       labels:
         app: {{ template "triton-inference-server.name" . }}
         release: {{ .Release.Name }}
-
     spec:
+      serviceAccountName: {{ template "triton-inference-server.fullname" . }}
+      {{- /*
+      We'll need to add other supported modelRepository types to ensure we're
+      wiring the volumes up correctly
+      */}}
+      {{- with .Values.modelRepository }}
+      {{- if eq .type "nfs" }}
       volumes:
         - name: models
           nfs:
-            server: {{ .Values.image.modelRepositoryServer }}
-            path: {{ .Values.image.modelRepositoryPath }}
-            readOnly: false
+            server: {{ .nfs.server }}
+            path: {{ .nfs.path }}
+            readOnly: {{ .nfs.readOnly }}
+      {{- end }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
-          image: "{{ .Values.image.imageName }}"
+          image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.modelRepository }}
+          {{- if eq .type "nfs" }}
           volumeMounts:
             - mountPath: /models
               name: models
-
+          {{- end }}
+          {{- end }}
           resources:
             limits:
-              nvidia.com/gpu: {{ .Values.image.numGpus }}
-
+              nvidia.com/gpu: {{ .Values.deployment.numGpus }}
           args:
             - tritonserver
-            {{- range .Values.serverArgs }}
-            - {{ . }}
+            {{- /*
+            We need to confirm the modelRepository type because some won't have
+            a mountPath at all, e.g. S3
+            */}}
+            {{- with .Values.modelRepository }}
+            {{- if eq .type "nfs" }}
+            - --model-repository={{ .mountPath }}
+            {{- else if eq .type "s3" }}
+            - --model-repository={{ include "triton-inference-server.s3url" $ }}
             {{- end }}
-
+            {{- end }}
+            {{- with .Values.deployment.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           ports:
             - containerPort: 8000
               name: http
@@ -105,7 +130,10 @@ spec:
             httpGet:
               path: /v2/health/ready
               port: http
-
+      {{- with .Values.deployment.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
-        runAsUser: 1000
-        fsGroup: 1000
+        runAsUser: {{ .Values.deployment.uid }}
+        fsGroup: {{ .Values.deployment.uid }}
