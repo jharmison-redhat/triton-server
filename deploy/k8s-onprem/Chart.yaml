@@ -29,7 +29,7 @@ apiVersion: v2
 description: Triton Inference Server
 name: triton-inference-server
 version: 2.0.0
-appVersion: 24.10-py3
+appVersion: 25.01-py3
 dependencies:
   - name: traefik
     version: "~10.6.2"
